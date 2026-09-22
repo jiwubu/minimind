@@ -20,8 +20,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 _ADD_HEAD = re.compile(r'^竖式计算 (\d+) \+ (\d+)$')
 _SUB_HEAD = re.compile(r'^先比较 (\d+) 和 (\d+) 的大小')
+_MUL_HEAD = re.compile(r'^竖式计算 (\d+) \* (\d+)$')
+_DIV_HEAD = re.compile(r'^竖式计算 (\d+) / (\d+)$')
+_REMAINDER_LINE = re.compile(r'余数\s*[:：]\s*(\d+)')
 # 自然语境题的标记词：只出现在 CONTEXT_* 模板里，普通算式模板不含
-_CTX_MARK = ('元', '页', '千米', '册', '人口', '件')
+_CTX_MARK = ('元', '页', '千米', '册', '人口', '件', '箱', '瓶', '袋', '颗', '支')
 
 
 def max_run(s, ch=None):
@@ -37,21 +40,24 @@ def max_run(s, ch=None):
 
 
 def parse_row(conv):
-    """从会话里反解 (a, op, b, result, question)。非数学行返回 None"""
+    """从会话里反解 (a, op, b, result, question, answer)。非数学行返回 None。
+
+    除法的 result 取商（余数由调用方另解 `余数:` 行）。
+    """
     q = next((m['content'] for m in conv if m['role'] == 'user'), '')
     ans = next((m['content'] for m in conv if m['role'] == 'assistant'), '')
-    if ans.startswith('竖式计算'):
-        m = _ADD_HEAD.match(ans.splitlines()[0])
-        if not m:
-            return None
+    head = ans.splitlines()[0] if ans else ''
+    for regex, op, calc in ((_ADD_HEAD, '+', lambda x, y: x + y),
+                            (_MUL_HEAD, '*', lambda x, y: x * y),
+                            (_DIV_HEAD, '/', lambda x, y: x // y)):
+        m = regex.match(head)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            return a, op, b, calc(a, b), q, ans
+    m = _SUB_HEAD.match(ans)
+    if m:
         a, b = int(m.group(1)), int(m.group(2))
-        return a, '+', b, a + b, q
-    if ans.startswith('先比较'):
-        m = _SUB_HEAD.match(ans.splitlines()[0])
-        if not m:
-            return None
-        a, b = int(m.group(1)), int(m.group(2))
-        return a, '-', b, a - b, q
+        return a, '-', b, a - b, q, ans
     return None
 
 
@@ -64,9 +70,10 @@ def main():
     args = ap.parse_args()
 
     total = math_n = 0
-    op_cnt = {'+': 0, '-': 0}
+    op_cnt = {'+': 0, '-': 0, '*': 0, '/': 0}
     neg = neg_equal_close = 0
     ctx = compact = spaced = word = 0
+    div_rem = div_corr = div_q0 = div_d1 = 0
     leadzero_hist = {}
     run3 = run4 = zero3 = zero4 = 0
     token_rows = []
@@ -87,16 +94,16 @@ def main():
             if parsed is None:
                 continue
             math_n += 1
-            a, op, b, r, q = parsed
+            a, op, b, r, q, ans = parsed
             op_cnt[op] += 1
 
             if any(w in q for w in _CTX_MARK):
                 ctx += 1
-            elif re.search(rf'{a}[+-]{b}', q):
+            elif re.search(rf'{a}[+\-*/]{b}', q):
                 compact += 1
-            elif re.search(rf'{a} [+-] {b}', q):
+            elif re.search(rf'{a} [+\-*/] {b}', q):
                 spaced += 1
-            elif '加' in q or '减' in q:
+            elif '加' in q or '减' in q or '乘' in q or '除以' in q:
                 word += 1
 
             if op == '-':
@@ -110,6 +117,19 @@ def main():
                 k = d - len(str(r)) if r > 0 else d - 1
                 if k >= 1:
                     leadzero_hist[k] = leadzero_hist.get(k, 0) + 1
+
+            if op == '/':
+                # 除法专档：试商修正（轨迹里出现 `太大`）、带余数、商含 0、
+                # 除数位数 —— gen_math_data_muldiv 的标称配比在这里对账
+                if '太大' in ans:
+                    div_corr += 1
+                m = _REMAINDER_LINE.search(ans)
+                if m and int(m.group(1)) > 0:
+                    div_rem += 1
+                if '0' in str(r):
+                    div_q0 += 1
+                if len(str(b)) == 1:
+                    div_d1 += 1
 
             rs = str(abs(r))
             if max_run(rs) >= 3:
@@ -127,21 +147,29 @@ def main():
     print(f'总行数 {total}  数学行 {math_n}（其余为通用数据）')
     if not math_n:
         return
-    print(f'\n运算符: 加 {op_cnt["+"]/math_n:.1%}  减 {op_cnt["-"]/math_n:.1%}')
+    print(f'\n运算符: 加 {op_cnt["+"]/math_n:.1%}  减 {op_cnt["-"]/math_n:.1%}  '
+          f'乘 {op_cnt["*"]/math_n:.1%}  除 {op_cnt["/"]/math_n:.1%}')
     print(f'问法: 紧凑 {compact/math_n:.1%}  带空格 {spaced/math_n:.1%}  '
           f'口语 {word/math_n:.1%}  自然语境 {ctx/math_n:.1%}')
+    if op_cnt['/']:
+        ndiv = op_cnt['/']
+        print(f'\n除法专档（{ndiv} 条）: 试商修正 {div_corr/ndiv:.1%}'
+              f'  [标称 ~{0.3 * 0.94:.0%}+]  带余数 {div_rem/ndiv:.1%}'
+              f'  商含0 {div_q0/ndiv:.1%}  除数1位 {div_d1/ndiv:.1%}')
     nsub = op_cnt['-'] or 1
-    print(f'\n负数占减法: {neg/nsub:.1%}（占数学行 {neg/math_n:.1%}）')
-    print(f'负数·等长且接近（差值比操作数短≥2位）: {neg_equal_close/math_n:.2%}'
-          f'  [达标线 ≥2%]')
+    if op_cnt['-']:
+        print(f'\n负数占减法: {neg/nsub:.1%}（占数学行 {neg/math_n:.1%}）')
+        print(f'负数·等长且接近（差值比操作数短≥2位）: {neg_equal_close/math_n:.2%}'
+              f'  [达标线 ≥2%]')
     lz_total = sum(leadzero_hist.values())
-    print(f'\n需去前导零（减法帧）: {lz_total/nsub:.1%}（占减法）')
-    for k in sorted(leadzero_hist):
-        print(f'  k={k}: {leadzero_hist[k]/math_n:.2%}（占数学行）')
-    lz3 = sum(v for k, v in leadzero_hist.items() if k >= 3)
-    lz5 = sum(v for k, v in leadzero_hist.items() if k >= 5)
-    print(f'  k>=3 合计 {lz3/math_n:.2%}（v5 基线 2.26%）  '
-          f'k>=5 合计 {lz5/math_n:.2%}（v5 基线 0.83%）')
+    if op_cnt['-']:
+        print(f'\n需去前导零（减法帧）: {lz_total/nsub:.1%}（占减法）')
+        for k in sorted(leadzero_hist):
+            print(f'  k={k}: {leadzero_hist[k]/math_n:.2%}（占数学行）')
+        lz3 = sum(v for k, v in leadzero_hist.items() if k >= 3)
+        lz5 = sum(v for k, v in leadzero_hist.items() if k >= 5)
+        print(f'  k>=3 合计 {lz3/math_n:.2%}（v5 基线 2.26%）  '
+              f'k>=5 合计 {lz5/math_n:.2%}（v5 基线 0.83%）')
     print(f'\n答案最长重复串 ≥3: {run3/math_n:.1%}  ≥4: {run4/math_n:.1%}')
     print(f'答案最长零串   ≥3: {zero3/math_n:.1%}  ≥4: {zero4/math_n:.1%}'
           f'  [≥4 达标线 6%]')

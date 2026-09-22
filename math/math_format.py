@@ -13,6 +13,17 @@ v6 相对 v5 的变化（配合 patched tokenizer，见 docs/tokenizer_digits.md
 4. 负数符号由末行 `结果为负: -2` 单独声明，答案行保持纯 magnitude 拷贝
    —— 符号判断发生在交换状态行之后（位置早、有参照），不再压在
    高熵的答案行末尾。
+
+乘除扩展（配合 gen_math_data_muldiv.py，方案文档 §6）：
+5. 乘法 = 部分积竖式：乘数取位数少的操作数，逐位乘（行格式与加法进位
+   行同构：`十位: 3 * 4 + 1 = 13，写 3 进位 1`）→ 错位补零显式写出
+   → 逐行累加（复用 _add_core）。中间累加行尾写 `合计:` 而非 `答案:`
+   —— 一条轨迹只允许一个答案行，否则 parse_answer 命中的是中间结果。
+6. 除法 = 长除法 + 显式试商：每个商位写候选积（一位除数是口诀一行，
+   两位除数展开成与乘法行同构的逐位块），太大则 `试 c-1` 自纠，再
+   逐位减、落下一位。真商的一次性猜测是除法唯一的高熵决策，靠数据侧
+   的 overshoot 修正样本兜底（见 div_trace）。末行 `余数: X` 与
+   `结果为负:` 同构 —— 余数不压进答案行，解析各走各的正则。
 """
 
 import re
@@ -36,6 +47,11 @@ def _strip_leading_zeros(low_first):
     return out
 
 
+def _low_to_int(low_first):
+    """低位在前的数字列表 -> int"""
+    return int(''.join(map(str, reversed(_strip_leading_zeros(low_first)))))
+
+
 def _finish(lines, low_first):
     """统一收尾：逆序行 + 带位数锚点的答案行。
 
@@ -57,11 +73,14 @@ def _finish(lines, low_first):
     return '\n'.join(lines)
 
 
-def add_trace(a, b):
-    """非负整数加法的分步轨迹"""
+def _add_core(a, b):
+    """a+b 的逐位进位演算行（不含表头与收尾）。
+
+    独立成核是为了乘法部分积的逐行累加能复用同一套行格式，同时不产出
+    `答案:` 行 —— 中间步骤的合计行写 `合计:`，一条轨迹只有一个答案行。
+    """
     da, db = _low_digits(a), _low_digits(b)
-    lines = [f'竖式计算 {a} + {b}']
-    carry, out = 0, []
+    lines, carry, out = [], 0, []
     for i in range(max(len(da), len(db))):
         x = da[i] if i < len(da) else 0
         y = db[i] if i < len(db) else 0
@@ -73,6 +92,14 @@ def add_trace(a, b):
     if carry:
         lines.append(f'最高位进位 {carry}')
         out.append(carry)
+    return lines, out
+
+
+def add_trace(a, b):
+    """非负整数加法的分步轨迹"""
+    lines = [f'竖式计算 {a} + {b}']
+    core, out = _add_core(a, b)
+    lines.extend(core)
     return _finish(lines, out)
 
 
@@ -108,6 +135,29 @@ def compare_trace(a, b):
     return lines
 
 
+def _sub_core(a, b):
+    """a-b（要求 a>=b）的逐位借位演算行（不含比较/交换/表头/收尾）。
+
+    除法每步的 `余 - 商*除数` 复用本核心，使减法借位行全库只有一种格式。
+    """
+    da, db = _low_digits(a), _low_digits(b)
+    lines, borrow, out = [], 0, []
+    for i in range(len(da)):
+        x = da[i]
+        y = db[i] if i < len(db) else 0
+        t = x - y - borrow
+        if t < 0:
+            lines.append(f'{UNITS[i]}: {x} - {y} - {borrow} 不够减，借1 → '
+                         f'{x + 10} - {y} - {borrow} = {t + 10}，写 {t + 10} 借位 1')
+            out.append(t + 10)
+            borrow = 1
+        else:
+            lines.append(f'{UNITS[i]}: {x} - {y} - {borrow} = {t}，写 {t} 借位 0')
+            out.append(t)
+            borrow = 0
+    return lines, out
+
+
 def sub_trace(a, b, compare=True):
     """整数减法的分步轨迹；a < b 时先交换再取负。
 
@@ -134,27 +184,158 @@ def sub_trace(a, b, compare=True):
         rel = '>' if a > b else '='
         head.append(f'{a} {rel} {b}，不交换')
 
-    da, db = _low_digits(a), _low_digits(b)
     lines = head + [f'竖式计算 {a} - {b}']
-    borrow, out = 0, []
-    for i in range(len(da)):
-        x = da[i]
-        y = db[i] if i < len(db) else 0
-        t = x - y - borrow
-        if t < 0:
-            lines.append(f'{UNITS[i]}: {x} - {y} - {borrow} 不够减，借1 → '
-                         f'{x + 10} - {y} - {borrow} = {t + 10}，写 {t + 10} 借位 1')
-            out.append(t + 10)
-            borrow = 1
-        else:
-            lines.append(f'{UNITS[i]}: {x} - {y} - {borrow} = {t}，写 {t} 借位 0')
-            out.append(t)
-            borrow = 0
+    core, out = _sub_core(a, b)
+    lines.extend(core)
     return _finish(lines, out)
 
 
+def _mul_block_lines(n, d):
+    """n * d（d 为一位数）的逐位演算行，返回 (行列表, 低位在前结果)。
+
+    乘法部分积的每一行与除法的候选积都走这里，保证 `x * d` 的行格式
+    全库只有一种。进位链上限 9*9+8=89，一行只含一次一位乘法。
+    """
+    dn = _low_digits(n)
+    lines, carry, out = [], 0, []
+    for i, x in enumerate(dn):
+        t = x * d + carry
+        expr = f'{x} * {d} + {carry} = {t}' if carry else f'{x} * {d} = {t}'
+        lines.append(f'{UNITS[i]}: {expr}，写 {t % 10} 进位 {t // 10}')
+        out.append(t % 10)
+        carry = t // 10
+    if carry:
+        lines.append(f'最高位进位 {carry}')
+        out.append(carry)
+    return lines, out
+
+
+def mul_trace(a, b):
+    """非负整数乘法的部分积竖式轨迹。
+
+    结构：乘数取位数少的操作数（显式声明选择）→ 乘数每一位单独成行
+    （逐位乘，与加法进位行同构）→ 错位补零显式写出（不靠心算对齐）
+    → 逐行累加（两两相加，复用 _add_core）。错位不写隐式对齐而写补零
+    后的完整数，与「竖式演算行的数字都是显式字符串」的全库原则一致。
+    """
+    sa, sb = str(a), str(b)
+    if len(sa) + len(sb) > MAX_DIGITS:
+        raise ValueError(f'{a} * {b} 的积可能超过 {MAX_DIGITS} 位帧，需缩短操作数')
+    # 乘数 m 逐位去乘被乘数 n；位数少的作乘数（打平时取 b），既缩短轨迹
+    # 又让"选哪边逐位乘"成为可寻址的显式决策（与减法交换状态行同理）
+    m, n = (b, a) if len(sb) <= len(sa) else (a, b)
+    lines = [f'竖式计算 {a} * {b}']
+    if len(str(m)) < len(str(n)):
+        lines.append(f'乘数用位数少的 {m}，逐位乘 {n}')
+    else:
+        lines.append(f'乘数用 {m}，逐位乘 {n}')
+
+    rows = []
+    for k, d in enumerate(_low_digits(m)):
+        lines.append(f'第{k + 1}行: {n} * {d}（{UNITS[k]}）')
+        block, out = _mul_block_lines(n, d)
+        lines.extend(block)
+        val = _low_to_int(out)
+        row = f'第{k + 1}行结果: {val}'
+        if k and val:
+            row += f'，错 {k} 位: {val * 10 ** k}'
+        lines.append(row)
+        rows.append(val * 10 ** k)
+
+    acc = rows[0]
+    if len(rows) > 1:
+        lines.append('逐行累加')
+        for r in rows[1:]:
+            lines.append(f'累加: {acc} + {r}')
+            core, out = _add_core(acc, r)
+            lines.extend(core)
+            acc = _low_to_int(out)
+            lines.append(f'合计: {acc}')
+    return _finish(lines, _low_digits(acc))
+
+
+def div_trace(a, b, overshoot=0):
+    """整数长除法轨迹：试商 → 逐位乘验证 → 逐位减 → 落下一位。
+
+    真商 `rem // b` 是除法唯一的一次性"猜"决策（方案文档 §6 标记的难点），
+    对策是把验证完全拆成一位数步骤：候选积 c*b 逐位展开（一位除数是口诀
+    一行，多位除数走 _mul_block_lines），偏大则 `试 c-1` 逐个下调。数据侧
+    用 overshoot>0 的样本教模型自纠，推理时猜偏 1~2 位仍能收敛。
+
+    overshoot: 首个试商候选比真商大多少（数据侧 0~2），0 表示直接命中。
+    """
+    if b <= 0:
+        raise ValueError('除数必须为正整数')
+    sa = str(a)
+    if len(sa) > MAX_DIGITS:
+        raise ValueError(f'被除数 {a} 超过 {MAX_DIGITS} 位帧')
+    lines = [f'竖式计算 {a} / {b}']
+
+    # 取被除数最短前缀使得 >= 除数：商的最高位位置由此确定
+    L = next((l for l in range(1, len(sa) + 1) if int(sa[:l]) >= b), None)
+    if L is None:
+        # a < b：商 0 余 a。保留为独立分支，避免主循环对空商特判
+        lines.append(f'{a} < {b}，首位就不够商，商 0')
+        lines.append('答案(1位): 0')
+        lines.append(f'余数: {a}')
+        return '\n'.join(lines)
+
+    lines.append(f'前 {L} 位 {sa[:L]} >= {b}，'
+                 f'商从{UNITS[len(sa) - L]}起，共 {len(sa) - L + 1} 位')
+    rem = int(sa[:L])
+    q_digits = []
+    pos = len(sa) - L                     # 当前商位的位名（UNITS 下标）
+    for j in range(L, len(sa) + 1):
+        q = rem // b                      # 真商 ≤ 9：rem < 10*b 由前缀构造保证
+        c = min(9, q + max(0, overshoot))
+        lines.append(f'{UNITS[pos]}: {rem} 试商')
+        while True:
+            bc = b * c
+            if len(_low_digits(b)) > 1:
+                lines.append(f'{b} * {c}')
+                block, _ = _mul_block_lines(b, c)
+                lines.extend(block)
+            lines.append(f'{b} * {c} = {bc}')
+            if bc > rem:
+                lines.append(f'{bc} > {rem}，太大，试 {c - 1}')
+                c -= 1
+                continue
+            break
+        if bc == 0:
+            # 商 0 档：x - 0 的逐位借位行全是平凡抄写，一行直写更省
+            lines.append(f'{bc} <= {rem}，{rem} - 0 = {rem}')
+            rem2 = rem
+        else:
+            lines.append(f'{bc} <= {rem}，够减，逐位减')
+            core, out = _sub_core(rem, bc)
+            lines.extend(core)
+            rem2 = _low_to_int(out)
+            lines.append(f'差: {rem2}')
+        lines.append(f'{rem2} < {b}，商 {c}')
+        q_digits.append(c)
+        rem = rem2
+        if j < len(sa):
+            d = int(sa[j])
+            lines.append(f'落下 {d}，{rem} * 10 + {d} = {rem * 10 + d}')
+            rem = rem * 10 + d
+            pos -= 1
+
+    q = int(''.join(map(str, q_digits)))
+    lines.append(f'答案({len(q_digits)}位): {q}')
+    lines.append(f'余数: {rem}')
+    return '\n'.join(lines)
+
+
 def build_trace(a, op, b):
-    return add_trace(a, b) if op == '+' else sub_trace(a, b)
+    if op == '+':
+        return add_trace(a, b)
+    if op == '-':
+        return sub_trace(a, b)
+    if op == '*':
+        return mul_trace(a, b)
+    if op == '/':
+        return div_trace(a, b)
+    raise ValueError(f'未知运算符 {op}')
 
 
 # ----------------------------------------------------------------------------
@@ -197,6 +378,15 @@ def parse_answer(text):
 
     nums = re.findall(r'-?\d+', text.replace(',', '').replace(' ', ''))
     return int(nums[-1]) if nums else None
+
+
+_REMAINDER_LINE = re.compile(r'余数\s*[:：]\s*(\d+)')
+
+
+def parse_remainder(text):
+    """从除法轨迹里抽 `余数: X` 行。无该行返回 None（加减乘轨迹恒 None）。"""
+    m = _REMAINDER_LINE.search(text)
+    return int(m.group(1)) if m else None
 
 
 def parse_conclusion(text):
