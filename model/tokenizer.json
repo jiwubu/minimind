@@ -330,10 +330,19 @@
   ],
   "normalizer": null,
   "pre_tokenizer": {
-    "type": "ByteLevel",
-    "add_prefix_space": false,
-    "trim_offsets": true,
-    "use_regex": true
+    "type": "Sequence",
+    "pretokenizers": [
+      {
+        "type": "Digits",
+        "individual_digits": true
+      },
+      {
+        "type": "ByteLevel",
+        "add_prefix_space": false,
+        "trim_offsets": true,
+        "use_regex": true
+      }
+    ]
   },
   "post_processor": null,
   "decoder": {
