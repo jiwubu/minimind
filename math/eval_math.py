@@ -1,12 +1,11 @@
 """四则运算评测：按「位数 × 运算符 × 写法」分档给出准确率。
 
-务必用本脚本（而非肉眼或通用提取逻辑）判断改动是否有效：上一轮
-full_sft_math_heavy 的正确输出 `答案: 6 8 5` 被"取最后一个数字"的
-提取逻辑判成了 5，导致 55% 的真实准确率被误报为 0%。
+务必用本脚本（而非肉眼或通用提取逻辑）判断改动是否有效：曾发生过
+正确输出 `答案(3位): 685` 被"取最后一个数字"的提取逻辑判成 5，
+导致 55% 的真实准确率被误报为 0% —— 答案解析必须与轨迹格式单点维护。
 
 用法:
-    python scripts/eval_math.py --weight full_sft_math
-    python scripts/eval_math.py --weight full_sft --max_digits 4 --n 20
+    python math/eval_math.py --weight full_sft_math_v1 --max_digits 8 --n 25
 """
 
 import os
@@ -23,7 +22,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM  # noqa: E402
-from math_format import parse_answer, parse_remainder, parse_conclusion  # noqa: E402
+from math_format import parse_answer, parse_remainder  # noqa: E402
 from gen_math_data_muldiv import (  # noqa: E402
     sample_mul_general, sample_mul_onedigit, sample_mul_tens,
     sample_mul_zeroinside, sample_mul_power10, sample_mul_repdigit,
@@ -87,7 +86,7 @@ def _rand_operand(d):
 def build_cases(args):
     """固定seed生成评测集，保证不同checkpoint之间可比。
 
-    分十组，每组都对应一个曾经在评测里不可见的维度：
+    分组原则：每一档都对应一个曾经在评测里不可见的维度：
       equal        两操作数位数相同（12 + 34）
       uneq         位数差 >= 2，长数在前（123 + 12）
       short1st     位数差 >= 2，短数在前（12 + 123）—— 未覆盖时实测仅 0.7%
@@ -374,7 +373,7 @@ def build_cases(args):
 
 def main():
     ap = argparse.ArgumentParser(description='加减法分档评测')
-    ap.add_argument('--weight', default='full_sft', help='out/ 下的权重前缀')
+    ap.add_argument('--weight', default='full_sft_math_v1', help='out/ 下的权重前缀')
     ap.add_argument('--save_dir', default='out')
     ap.add_argument('--tokenizer', default='model')
     ap.add_argument('--hidden_size', type=int, default=768)
@@ -410,8 +409,6 @@ def main():
                 c['self_correct'] = '太大' in o
             else:
                 c['ok'] = c['pred'] == c['gt']
-            # 演算对但正序拷贝错 —— 值得单独观察的失败模式
-            c['conclusion'] = parse_conclusion(o)
         done = min(i + args.batch_size, len(cases))
         print(f'\r进度 {done}/{len(cases)}', end='', flush=True)
     print('\n')
@@ -500,12 +497,6 @@ def main():
             acc = sum(c['ok'] for c in fixed) / len(fixed) * 100
             print(f'  触发自纠（含`太大`）: {acc:.1f}%  ({len(fixed)} 题)'
                   '  ← 验证 overshoot 自纠是否真救回猜偏的样本')
-
-    # 演算正确但最终答案行错误的比例，反映"正序拷贝"这一步是否是瓶颈
-    mismatch = [c for c in cases
-                if c['conclusion'] is not None and c['pred'] != c['conclusion']]
-    if mismatch:
-        print(f'答案行与结论行不一致: {len(mismatch)} 例（正序拷贝出错）')
 
     if args.show_errors:
         print('\n--- 错例 ---')

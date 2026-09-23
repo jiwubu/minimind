@@ -387,17 +387,3 @@ def parse_remainder(text):
     """从除法轨迹里抽 `余数: X` 行。无该行返回 None（加减乘轨迹恒 None）。"""
     m = _REMAINDER_LINE.search(text)
     return int(m.group(1)) if m else None
-
-
-def parse_conclusion(text):
-    """单独抽取结论行 `所以 a op b = N` 里的 N。
-
-    v4 之后训练数据不再生成结论行（见 _finish），本函数只用于评测
-    v2~v4 这些旧 checkpoint —— 它们仍会输出结论行，评测器据此统计
-    "答案行≠结论行"。对新模型恒返回 None，该项统计自然消失。
-    """
-    for line in reversed(text.strip().splitlines()):
-        m = _CONCLUSION.search(line.strip())
-        if m:
-            return int(m.group(1))
-    return None
