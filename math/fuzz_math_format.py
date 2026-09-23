@@ -18,7 +18,7 @@ import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import math_format as mf  # noqa: E402
-from gen_math_data import (  # noqa: E402
+from gen_math_data_addsub import (  # noqa: E402
     sample_pair, sample_close_pair, sample_repdigit_pair, sample_equal_pair,
     sample_leadzero_pair, sample_zerorun_pair, sample_longrun_answer_pair,
     sample_negative_pair, sample_context_pair, make_sample)

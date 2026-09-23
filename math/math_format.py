@@ -1,6 +1,6 @@
 """加减法「一位一token」轨迹的生成与解析（v6）。
 
-数据生成(gen_math_data.py)与评测(eval_math.py)共用本模块，保证二者格式完全一致
+数据生成(gen_math_data_addsub.py / gen_math_data_muldiv.py)与评测(eval_math.py)共用本模块，保证二者格式完全一致
 ——上一版评测把正确输出判成错误，就是因为生成和解析各写了一套。
 
 v6 相对 v5 的变化（配合 patched tokenizer，见 docs/tokenizer_digits.md）：

@@ -168,7 +168,7 @@ def build_cases(args):
                               'a': a, 'b': b, 'gt': gt, 'q': f'{a}{op}{b}'})
 
     # 全同数字（99+999 / 2222 - 222）：随机采样几乎生成不出这种数，必须显式构造。
-    # 见 gen_math_data.sample_repdigit_pair 的说明：紧凑写法下全同数字时
+    # 见 gen_math_data_addsub.sample_repdigit_pair 的说明：紧凑写法下全同数字时
     # ['99','9'] 与 ['99','99'] token 数相同且内容重复，位数信息丢失。
     #
     # **写法必须两种都测**。本档原先 362 题紧凑 / 1 题带空格，于是

@@ -1,6 +1,6 @@
 """生成「一位一token」乘除法课程数据（v1），输出 SFT 会话格式 jsonl。
 
-沿用加减法 v6 已验证的方法论（gen_math_data.py 与数学专用模型训练方案 §6）：
+沿用加减法已验证的方法论（gen_math_data_addsub.py 与数学专用模型训练方案 §6）：
 每个演算行只做一次一位数决策，格式单点维护在 math_format.py。
 
 乘法 = 部分积竖式（训练方案 §6 的设计）：乘数取位数少的操作数、逐位乘
@@ -17,7 +17,7 @@ max 1232 token，与 4×4 乘法（max 1263）共同决定 SFT 的 max_seq_len=1
 * 与 / 是单 token；× ÷ 是多字节碎片，题面一律用 ASCII 符号。
 
 用法:
-    python math/gen_math_data_muldiv.py --out dataset/math_muldiv_v1.jsonl --n 400000
+    python math/gen_math_data_muldiv.py --out dataset/math_muldiv_v1.jsonl --n 200000
     python math/gen_math_data_muldiv.py --out dataset/math_muldiv_tiny.jsonl --n 2000  # 本机冒烟
 """
 
@@ -29,7 +29,7 @@ import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from math_format import mul_trace, div_trace, MAX_DIGITS  # noqa: E402
-from gen_math_data import (  # noqa: E402
+from gen_math_data_addsub import (  # noqa: E402
     TEMPLATES, WORD_TEMPLATES, sample_operand, reservoir_sample)
 
 # 与加减法共用问法模板（{op} 槽位对 * / 同样成立），口语动词按运算符区分。
@@ -58,7 +58,7 @@ SYSTEM_PROMPTS = [
 
 
 def make_question(a, op, b):
-    """把 (a, op, b) 套进一个随机问法模板，风格与 gen_math_data 一致"""
+    """把 (a, op, b) 套进一个随机问法模板，风格与 gen_math_data_addsub 一致"""
     if random.random() < 0.25:
         w = random.choice(OP_WORD[op])
         return random.choice(WORD_TEMPLATES).format(a=a, b=b, w=w)
@@ -66,7 +66,7 @@ def make_question(a, op, b):
 
 
 def nonzero_operand(digits):
-    """采指定位数的非零整数。gen_math_data.sample_operand 在 1 位时允许 0，
+    """采指定位数的非零整数。gen_math_data_addsub.sample_operand 在 1 位时允许 0，
     那是给加法用的；除数为 0 无定义，除数一律走这里"""
     if digits == 1:
         return random.randint(1, 9)

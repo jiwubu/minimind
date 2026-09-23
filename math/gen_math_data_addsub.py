@@ -1,9 +1,9 @@
-"""生成「一位一token」加减法课程数据（v6），输出 SFT 会话格式 jsonl。
+"""生成「一位一token」加减法课程数据，输出 SFT 会话格式 jsonl。
 
 与自然语料的分布不同，这里位数是**均匀采样**的：自然数据里 83% 的算式
 集中在1~2位，模型因此只在记忆范围内正确。均匀采样确保高位数样本充足。
 
-v6 变化（配合 patched tokenizer，见 math_format.py 模块注释）：
+相对上一版的变化（配合 patched tokenizer，见 math_format.py 模块注释）：
 - 数字一律紧凑十进制，模板不再区分带空格/紧凑两套（tokenizer 已保证
   位值对齐），只保留问法多样性；
 - 新增 sample_leadzero_pair：结果需去掉 k 个前导零，k 均匀覆盖；
@@ -12,8 +12,8 @@ v6 变化（配合 patched tokenizer，见 math_format.py 模块注释）：
 - 新增自然语境数字题（约 5%）：数字嵌在真实语境里读题。
 
 用法:
-    python math/gen_math_data.py --out dataset/math_addsub_v6.jsonl --n 400000
-    python math/gen_math_data.py --out dataset/math_addsub_tiny.jsonl --n 2000  # 本机冒烟
+    python math/gen_math_data_addsub.py --out dataset/math_addsub_v1.jsonl --n 200000
+    python math/gen_math_data_addsub.py --out dataset/math_addsub_tiny.jsonl --n 2000  # 本机冒烟
 """
 
 import os

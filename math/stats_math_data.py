@@ -1,12 +1,12 @@
 """对生成的数学数据做插桩统计（方法论 #6：设了 X% 必须实测命中 X%）。
 
 从 jsonl 反解出 (a, op, b) 与结果，统计场景覆盖率与 token 长度分布。
-覆盖率必须与 gen_math_data.py 的分支标称比例对照，被模板、交换、条件
+覆盖率必须与 gen_math_data_addsub.py / gen_math_data_muldiv.py 的分支标称比例对照，被模板、交换、条件
 概率稀释掉的档位在这里现形。
 
 用法:
-    python math/stats_math_data.py dataset/math_addsub_v6.jsonl
-    python math/stats_math_data.py dataset/math_addsub_v6.jsonl --token_sample 20000
+    python math/stats_math_data.py dataset/math_all_v1.jsonl
+    python math/stats_math_data.py dataset/math_all_v1.jsonl --token_sample 20000
 """
 
 import os
