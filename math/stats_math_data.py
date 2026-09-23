@@ -109,7 +109,7 @@ def main():
             if op == '-':
                 if r < 0:
                     neg += 1
-                    # 等长且接近：差值比操作数短 >= 2 位（§6.1 的定义）
+                    # 等长且接近：差值比操作数短 >= 2 位
                     if len(str(a)) == len(str(b)) and len(str(b)) - len(str(-r)) >= 2:
                         neg_equal_close += 1
                 # 前导零：竖式按操作数帧 d 位演算，结果 r 的帧里前 k 位是 0
