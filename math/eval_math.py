@@ -1,4 +1,4 @@
-"""加减法能力评测：按「位数 × 运算符 × 写法」分档给出准确率。
+"""四则运算评测：按「位数 × 运算符 × 写法」分档给出准确率。
 
 务必用本脚本（而非肉眼或通用提取逻辑）判断改动是否有效：上一轮
 full_sft_math_heavy 的正确输出 `答案: 6 8 5` 被"取最后一个数字"的
@@ -23,7 +23,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM  # noqa: E402
-from math_format import parse_answer, parse_conclusion  # noqa: E402
+from math_format import parse_answer, parse_remainder, parse_conclusion  # noqa: E402
+from gen_math_data_muldiv import (  # noqa: E402
+    sample_mul_general, sample_mul_onedigit, sample_mul_tens,
+    sample_mul_zeroinside, sample_mul_power10, sample_mul_repdigit,
+    sample_mul_nines, sample_mul_equal,
+    sample_div_zeroq, sample_div_zerorun, sample_div_small)
 
 warnings.filterwarnings('ignore')
 
@@ -97,6 +102,10 @@ def build_cases(args):
       leadzero     结果带 k 个前导零（2222-2222+111 → 00111）—— 中间深度
                    的 k=3~6 是上一版的采样空档，按 k 分桶统计
       longrun      答案带长重复串但操作数普通（1234000+5678）—— zerorun 够不着
+      mul*         乘法八档（通用/一位/末尾零/内嵌0/整十幂/全同/9串/相等）——
+                   直接复用训练采样器，评测形状 = 训练形状
+      div*         除法：通用拆整除/带余（商余双判分）+ 商含0/商零串/小除以大；
+                   除法专项统计除数位数 × 首候选是否命中（§7.4）
 
     nospace 档保留的原因：v6 patched tokenizer 下两种写法的数字切分已完全
     一致，但它测的"读紧凑题面"能力本身仍要单独可见。
@@ -305,6 +314,61 @@ def build_cases(args):
             q = f'{a}-{b}' if random.random() < 0.5 else f'{a} - {b}'
             cases.append({'group': 'leadzero', 'digits': d, 'op': '-',
                           'a': a, 'b': b, 'gt': a - b, 'q': q, 'k': k})
+
+    # ---------------- 乘除（§7.4）：分档与训练课程一一对应 ----------------
+    # 乘法直接复用训练采样器保证形状一致；档位 d = 较宽操作数的位数。
+    # 乘积帧上限 MAX_DIGITS=12 → 操作数位数封顶 6（6*6 恰好 12 位帧，
+    # mul_trace 超帧会 raise）；超出训练范围（默认 4）的行正好观察外推。
+    mul_cap = min(args.max_digits, 6)
+    mul_samplers = [('mul', sample_mul_general), ('mul_1d', sample_mul_onedigit),
+                    ('mul_tens', sample_mul_tens),
+                    ('mul_zeroinside', sample_mul_zeroinside),
+                    ('mul_power10', sample_mul_power10),
+                    ('mul_repdigit', sample_mul_repdigit),
+                    ('mul_nines', sample_mul_nines), ('mul_equal', sample_mul_equal)]
+    for group, fn in mul_samplers:
+        for _ in range(args.n * mul_cap):
+            a, b = fn(mul_cap)
+            q = f'{a}*{b}' if random.random() < 0.5 else f'{a} * {b}'
+            cases.append({'group': group, 'digits': max(len(str(a)), len(str(b))),
+                          'op': '*', 'a': a, 'b': b, 'gt': a * b, 'q': q})
+
+    # 除法：整除 / 带余单独成档（商余双判分），商含 0 / 商零串 / 小除以大
+    # 复用训练采样器。档位 d = 被除数位数，除数 1~2 位与训练默认一致。
+    div_cap = min(args.max_digits, 8)
+
+    def _div_pair(dd, exact):
+        lo, hi = (1, 9) if dd == 1 else (10, 99)
+        b = random.randint(lo if exact else max(2, lo), hi)   # 带余需 b >= 2
+        q = _rand_operand(random.randint(1, max(1, div_cap - dd)))
+        return (b * q, b) if exact else (b * q + random.randint(1, b - 1), b)
+
+    for group, exact in (('div_exact', True), ('div_remain', False)):
+        for _ in range(args.n * div_cap):
+            a, b = _div_pair(random.randint(1, 2), exact)
+            gq, gr = divmod(a, b)
+            q = f'{a}/{b}' if random.random() < 0.5 else f'{a} / {b}'
+            cases.append({'group': group, 'digits': len(str(a)), 'op': '/',
+                          'a': a, 'b': b, 'gt': gq, 'gt_r': gr, 'q': q,
+                          'dd': len(str(b))})
+
+    for group, fn in (('div_zeroq', sample_div_zeroq),
+                      ('div_zerorun', sample_div_zerorun)):
+        for _ in range(args.n * div_cap // 2):
+            a, b = fn(div_cap, 2)
+            gq, gr = divmod(a, b)
+            q = f'{a}/{b}' if random.random() < 0.5 else f'{a} / {b}'
+            cases.append({'group': group, 'digits': len(str(a)), 'op': '/',
+                          'a': a, 'b': b, 'gt': gq, 'gt_r': gr, 'q': q,
+                          'dd': len(str(b))})
+
+    for _ in range(args.n):
+        a, b = sample_div_small(div_cap, 2)
+        gq, gr = divmod(a, b)
+        q = f'{a}/{b}' if random.random() < 0.5 else f'{a} / {b}'
+        cases.append({'group': 'div_small', 'digits': len(str(a)), 'op': '/',
+                      'a': a, 'b': b, 'gt': gq, 'gt_r': gr, 'q': q,
+                      'dd': len(str(b))})
     return cases
 
 
@@ -319,7 +383,8 @@ def main():
     ap.add_argument('--max_digits', type=int, default=8, help='评测到几位数')
     ap.add_argument('--n', type=int, default=25, help='每档题数')
     ap.add_argument('--batch_size', type=int, default=16)
-    ap.add_argument('--max_new_tokens', type=int, default=420)
+    ap.add_argument('--max_new_tokens', type=int, default=1500,
+                    help='乘除轨迹最长 ≈1300 token（加减仅 ≈440），按乘除给足')
     ap.add_argument('--device', default='auto')
     ap.add_argument('--seed', type=int, default=1234)
     ap.add_argument('--dump', default='', help='把逐题结果写入jsonl')
@@ -338,7 +403,13 @@ def main():
         for c, o in zip(chunk, outs):
             c['raw'] = o
             c['pred'] = parse_answer(o)
-            c['ok'] = c['pred'] == c['gt']
+            if c['op'] == '/':
+                # 除法商余双判分（§7.4）；轨迹含`太大` = 首候选未命中、走了自纠
+                c['pred_r'] = parse_remainder(o)
+                c['ok'] = c['pred'] == c['gt'] and c['pred_r'] == c['gt_r']
+                c['self_correct'] = '太大' in o
+            else:
+                c['ok'] = c['pred'] == c['gt']
             # 演算对但正序拷贝错 —— 值得单独观察的失败模式
             c['conclusion'] = parse_conclusion(o)
         done = min(i + args.batch_size, len(cases))
@@ -359,7 +430,14 @@ def main():
             ('neg_close', '-', '负数接近-', 10),
             ('leadzero', '-', '前导零-', 9),
             ('longrun', '+', '长串答案+', 9),
-            ('longrun', '-', '长串答案-', 9)]
+            ('longrun', '-', '长串答案-', 9),
+            ('mul', '*', '乘法*', 7), ('mul_1d', '*', '乘一位*', 8),
+            ('mul_tens', '*', '末尾零*', 8), ('mul_zeroinside', '*', '内嵌0*', 8),
+            ('mul_power10', '*', '整十幂*', 8), ('mul_repdigit', '*', '全同乘*', 8),
+            ('mul_nines', '*', '9串乘*', 8), ('mul_equal', '*', '相等乘*', 8),
+            ('div_exact', '/', '整除/', 7),
+            ('div_remain', '/', '带余/', 7), ('div_zeroq', '/', '商含0/', 8),
+            ('div_zerorun', '/', '商零串/', 8), ('div_small', '/', '小除以大/', 9)]
     print(f'{"位数":>4} ' + ' '.join(f'{label:>{width + 1}}'
                                      for _, _, label, width in cols))
     for d in range(1, args.max_digits + 1):
@@ -381,7 +459,14 @@ def main():
                          ('nospace_uneq', '紧凑不等长'), ('repdigit', '全同数字'),
                          ('zerorun', '长零串'), ('neg_suffix', '负数共后缀'),
                          ('neg', '负数'), ('neg_close', '负数·等长接近'),
-                         ('leadzero', '前导零'), ('longrun', '长串答案')):
+                         ('leadzero', '前导零'), ('longrun', '长串答案'),
+                         ('mul', '乘法（通用）'), ('mul_1d', '乘一位乘数'),
+                         ('mul_tens', '乘末尾零'), ('mul_zeroinside', '乘内嵌0'),
+                         ('mul_power10', '乘整十幂'), ('mul_repdigit', '乘全同数字'),
+                         ('mul_nines', '乘9串'), ('mul_equal', '乘相等'),
+                         ('div_exact', '整除'),
+                         ('div_remain', '带余'), ('div_zeroq', '商含0'),
+                         ('div_zerorun', '商零串'), ('div_small', '小除以大')):
         sub = [c for c in cases if c['group'] == group]
         if sub:
             acc = sum(c['ok'] for c in sub) / len(sub) * 100
@@ -398,6 +483,24 @@ def main():
                 parts.append(f'k={k}: {acc:.0f}%({len(bucket)})')
             print(f'  {group} 按 k: ' + '  '.join(parts))
 
+    # 除法专项（§7.4）：除数位数分档 + 首候选是否命中（含`太大`即走了自纠）
+    divs = [c for c in cases if c['op'] == '/']
+    if divs:
+        for dd, lbl in ((1, '除数1位'), (2, '除数2位')):
+            sub = [c for c in divs if c['dd'] == dd]
+            if sub:
+                acc = sum(c['ok'] for c in sub) / len(sub) * 100
+                print(f'  {lbl}: {acc:.1f}%  ({len(sub)} 题)')
+        first = [c for c in divs if not c['self_correct']]
+        fixed = [c for c in divs if c['self_correct']]
+        if first:
+            acc = sum(c['ok'] for c in first) / len(first) * 100
+            print(f'  首候选命中（无自纠）: {acc:.1f}%  ({len(first)} 题)')
+        if fixed:
+            acc = sum(c['ok'] for c in fixed) / len(fixed) * 100
+            print(f'  触发自纠（含`太大`）: {acc:.1f}%  ({len(fixed)} 题)'
+                  '  ← 验证 overshoot 自纠是否真救回猜偏的样本')
+
     # 演算正确但最终答案行错误的比例，反映"正序拷贝"这一步是否是瓶颈
     mismatch = [c for c in cases
                 if c['conclusion'] is not None and c['pred'] != c['conclusion']]
@@ -411,13 +514,25 @@ def main():
                              ('nospace_uneq', '紧凑不等长'), ('repdigit', '全同数字'),
                              ('zerorun', '长零串'), ('neg_suffix', '负数共后缀'),
                              ('neg', '负数'), ('neg_close', '负数接近'),
-                             ('leadzero', '前导零'), ('longrun', '长串答案')):
+                             ('leadzero', '前导零'), ('longrun', '长串答案'),
+                             ('mul', '乘'), ('mul_1d', '乘一位'),
+                             ('mul_tens', '乘末尾零'), ('mul_zeroinside', '乘内嵌0'),
+                             ('mul_power10', '乘整十幂'), ('mul_repdigit', '乘全同'),
+                             ('mul_nines', '乘9串'), ('mul_equal', '乘相等'),
+                             ('div_exact', '整除'),
+                             ('div_remain', '带余'), ('div_zeroq', '商含0'),
+                             ('div_zerorun', '商零串'), ('div_small', '小除以大')):
             for d in range(1, args.max_digits + 1):
                 errs = [c for c in cases if c['group'] == group
                         and c['digits'] == d and not c['ok']]
                 for c in errs[:args.show_errors]:
-                    print(f"[{label}] {c['a']} {c['op']} {c['b']} = {c['gt']}，"
-                          f"预测 {c['pred']}")
+                    gt_s = (f"{c['gt']} 余 {c['gt_r']}" if c['op'] == '/'
+                            else str(c['gt']))
+                    pred_s = (f"{c['pred']} 余 {c['pred_r']}"
+                              if c['op'] == '/' and c['pred_r'] is not None
+                              else str(c['pred']))
+                    print(f"[{label}] {c['a']} {c['op']} {c['b']} = {gt_s}，"
+                          f"预测 {pred_s}")
 
     if args.dump:
         with open(args.dump, 'w', encoding='utf-8') as f:
