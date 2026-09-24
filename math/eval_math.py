@@ -31,6 +31,41 @@ from gen_math_data_muldiv import (  # noqa: E402
 
 warnings.filterwarnings('ignore')
 
+# 分档 → 展示名的唯一出处：汇总表、错例打印与 eval_math_fast 共用，防止漂移
+GROUP_LABELS = (
+    ('equal', '等长'), ('uneq', '不等长'), ('short1st', '短在前'),
+    ('nospace', '紧凑写法'), ('nospace_uneq', '紧凑不等长'),
+    ('repdigit', '全同数字'), ('zerorun', '长零串'), ('neg_suffix', '负数共后缀'),
+    ('neg', '负数'), ('neg_close', '负数·等长接近'), ('leadzero', '前导零'),
+    ('longrun', '长串答案'), ('mul', '乘法（通用）'), ('mul_1d', '乘一位乘数'),
+    ('mul_tens', '乘末尾零'), ('mul_zeroinside', '乘内嵌0'),
+    ('mul_power10', '乘整十幂'), ('mul_repdigit', '乘全同数字'),
+    ('mul_nines', '乘9串'), ('mul_equal', '乘相等'), ('div_exact', '整除'),
+    ('div_remain', '带余'), ('div_zeroq', '商含0'), ('div_zerorun', '商零串'),
+    ('div_small', '小除以大'))
+
+
+def generate_and_score(model, tokenizer, cases, args, device):
+    """批量生成 + 判分。eval_math 与 eval_math_fast 共用，保证快速评测与
+    全量评测的判分口径完全一致（单点维护）。"""
+    for i in range(0, len(cases), args.batch_size):
+        chunk = cases[i:i + args.batch_size]
+        outs = batch_ask(model, tokenizer, [c['q'] for c in chunk],
+                         device, args.max_new_tokens)
+        for c, o in zip(chunk, outs):
+            c['raw'] = o
+            c['pred'] = parse_answer(o)
+            if c['op'] == '/':
+                # 除法商余双判分（§7.4）；轨迹含`太大` = 首候选未命中、走了自纠
+                c['pred_r'] = parse_remainder(o)
+                c['ok'] = c['pred'] == c['gt'] and c['pred_r'] == c['gt_r']
+                c['self_correct'] = '太大' in o
+            else:
+                c['ok'] = c['pred'] == c['gt']
+        done = min(i + args.batch_size, len(cases))
+        print(f'\r进度 {done}/{len(cases)}', end='', flush=True)
+    print('\n')
+
 
 def pick_device(name):
     if name != 'auto':
@@ -318,7 +353,7 @@ def build_cases(args):
     # 乘法直接复用训练采样器保证形状一致；档位 d = 较宽操作数的位数。
     # 乘积帧上限 MAX_DIGITS=12 → 操作数位数封顶 6（6*6 恰好 12 位帧，
     # mul_trace 超帧会 raise）；超出训练范围（默认 4）的行正好观察外推。
-    mul_cap = min(args.max_digits, 6)
+    mul_cap = min(args.mul_digits or args.max_digits, 6)
     mul_samplers = [('mul', sample_mul_general), ('mul_1d', sample_mul_onedigit),
                     ('mul_tens', sample_mul_tens),
                     ('mul_zeroinside', sample_mul_zeroinside),
@@ -334,7 +369,7 @@ def build_cases(args):
 
     # 除法：整除 / 带余单独成档（商余双判分），商含 0 / 商零串 / 小除以大
     # 复用训练采样器。档位 d = 被除数位数，除数 1~2 位与训练默认一致。
-    div_cap = min(args.max_digits, 8)
+    div_cap = min(args.div_digits or args.max_digits, 8)
 
     def _div_pair(dd, exact):
         lo, hi = (1, 9) if dd == 1 else (10, 99)
@@ -380,6 +415,10 @@ def main():
     ap.add_argument('--num_hidden_layers', type=int, default=8)
     ap.add_argument('--use_moe', type=int, default=0, choices=[0, 1])
     ap.add_argument('--max_digits', type=int, default=8, help='评测到几位数')
+    ap.add_argument('--mul_digits', type=int, default=4,
+                    help='乘法操作数最大位数（默认=训练范围 4；测外推需显式加大）')
+    ap.add_argument('--div_digits', type=int, default=4,
+                    help='除法被除数最大位数（默认=训练范围 4；测外推需显式加大）')
     ap.add_argument('--n', type=int, default=25, help='每档题数')
     ap.add_argument('--batch_size', type=int, default=16)
     ap.add_argument('--max_new_tokens', type=int, default=1500,
@@ -395,23 +434,7 @@ def main():
     cases = build_cases(args)
     print(f'权重={args.weight} 设备={device} 题数={len(cases)}\n')
 
-    for i in range(0, len(cases), args.batch_size):
-        chunk = cases[i:i + args.batch_size]
-        outs = batch_ask(model, tokenizer, [c['q'] for c in chunk],
-                         device, args.max_new_tokens)
-        for c, o in zip(chunk, outs):
-            c['raw'] = o
-            c['pred'] = parse_answer(o)
-            if c['op'] == '/':
-                # 除法商余双判分（§7.4）；轨迹含`太大` = 首候选未命中、走了自纠
-                c['pred_r'] = parse_remainder(o)
-                c['ok'] = c['pred'] == c['gt'] and c['pred_r'] == c['gt_r']
-                c['self_correct'] = '太大' in o
-            else:
-                c['ok'] = c['pred'] == c['gt']
-        done = min(i + args.batch_size, len(cases))
-        print(f'\r进度 {done}/{len(cases)}', end='', flush=True)
-    print('\n')
+    generate_and_score(model, tokenizer, cases, args, device)
 
     cols = [('equal', '+', '等长+', 7), ('equal', '-', '等长-', 7),
             ('uneq', '+', '不等长+', 8), ('uneq', '-', '不等长-', 8),
@@ -451,19 +474,7 @@ def main():
 
     overall = sum(c['ok'] for c in cases) / len(cases) * 100
     print(f'\n总体准确率: {overall:.1f}%')
-    for group, label in (('equal', '等长'), ('uneq', '不等长'),
-                         ('short1st', '短在前'), ('nospace', '紧凑写法'),
-                         ('nospace_uneq', '紧凑不等长'), ('repdigit', '全同数字'),
-                         ('zerorun', '长零串'), ('neg_suffix', '负数共后缀'),
-                         ('neg', '负数'), ('neg_close', '负数·等长接近'),
-                         ('leadzero', '前导零'), ('longrun', '长串答案'),
-                         ('mul', '乘法（通用）'), ('mul_1d', '乘一位乘数'),
-                         ('mul_tens', '乘末尾零'), ('mul_zeroinside', '乘内嵌0'),
-                         ('mul_power10', '乘整十幂'), ('mul_repdigit', '乘全同数字'),
-                         ('mul_nines', '乘9串'), ('mul_equal', '乘相等'),
-                         ('div_exact', '整除'),
-                         ('div_remain', '带余'), ('div_zeroq', '商含0'),
-                         ('div_zerorun', '商零串'), ('div_small', '小除以大')):
+    for group, label in GROUP_LABELS:
         sub = [c for c in cases if c['group'] == group]
         if sub:
             acc = sum(c['ok'] for c in sub) / len(sub) * 100
@@ -500,19 +511,7 @@ def main():
 
     if args.show_errors:
         print('\n--- 错例 ---')
-        for group, label in (('equal', '等长'), ('uneq', '不等长'),
-                             ('short1st', '短在前'), ('nospace', '紧凑'),
-                             ('nospace_uneq', '紧凑不等长'), ('repdigit', '全同数字'),
-                             ('zerorun', '长零串'), ('neg_suffix', '负数共后缀'),
-                             ('neg', '负数'), ('neg_close', '负数接近'),
-                             ('leadzero', '前导零'), ('longrun', '长串答案'),
-                             ('mul', '乘'), ('mul_1d', '乘一位'),
-                             ('mul_tens', '乘末尾零'), ('mul_zeroinside', '乘内嵌0'),
-                             ('mul_power10', '乘整十幂'), ('mul_repdigit', '乘全同'),
-                             ('mul_nines', '乘9串'), ('mul_equal', '乘相等'),
-                             ('div_exact', '整除'),
-                             ('div_remain', '带余'), ('div_zeroq', '商含0'),
-                             ('div_zerorun', '商零串'), ('div_small', '小除以大')):
+        for group, label in GROUP_LABELS:
             for d in range(1, args.max_digits + 1):
                 errs = [c for c in cases if c['group'] == group
                         and c['digits'] == d and not c['ok']]
