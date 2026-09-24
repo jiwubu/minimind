@@ -7,3 +7,5 @@ docs-minimind/
 dataset/*.jsonl
 download.sh
 upload.sh
+checkpoints
+bak
