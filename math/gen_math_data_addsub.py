@@ -201,7 +201,12 @@ def sample_leadzero_pair(max_digits):
         a = random.randint(0, 9)
         return a, a
     d = random.randint(2, max_digits)
-    k = random.randint(1, d - 1)                    # 要去掉的前导零个数
+    if d >= 6 and random.random() < 0.4:
+        # 深度剥离（k>=5）是实测短板（k=6/7 全量评测只有 10/6 条样本），
+        # 40% 概率强制 k>=5 补量
+        k = random.randint(5, d - 1)
+    else:
+        k = random.randint(1, d - 1)
     r = random.randint(10 ** (d - k - 1), 10 ** (d - k) - 1)   # 恰好 d-k 位
     lo = max(1, 10 ** (d - 1) - r)                  # 保证 a = b + r 仍是 d 位
     hi = 10 ** d - 1 - r
@@ -291,12 +296,19 @@ def sample_longrun_answer_pair(max_digits):
 
 
 def _close_pair(d, k):
-    """构造两个 d 位数，共享高位前缀、只在末 k 位分出大小，返回 a < b。"""
+    """构造两个 d 位数，共享高位前缀、恰在末 k 位处首次分出大小，返回 a < b。
+
+    尾部构造为"第 1 位即分出大小、其余随机"——若尾部整体随机，尾部自身
+    可能提前相同，把实际首次差异位浅化，深链训练样本被稀释（实测 k=2/3
+    的偏置因此被抵消大半）。首尾位之后随机即可，首次差异位已锁定。
+    """
     head = str(random.randint(1, 9)) + ''.join(
         str(random.randint(0, 9)) for _ in range(d - k - 1))
-    tail_a = random.randint(0, 10 ** k - 2)
-    tail_b = random.randint(tail_a + 1, 10 ** k - 1)
-    return int(head + str(tail_a).zfill(k)), int(head + str(tail_b).zfill(k))
+    da0 = random.randint(0, 8)
+    db0 = random.randint(da0 + 1, 9)
+    tail_a = str(da0) + ''.join(str(random.randint(0, 9)) for _ in range(k - 1))
+    tail_b = str(db0) + ''.join(str(random.randint(0, 9)) for _ in range(k - 1))
+    return int(head + tail_a), int(head + tail_b)
 
 
 def sample_negative_pair(max_digits):
@@ -335,9 +347,11 @@ def sample_negative_pair(max_digits):
         return a, b
 
     if r < 0.85:
-        # 等长且接近：共享高位前缀，只在末 k 位分出大小
+        # 等长且接近：共享高位前缀，只在末 k 位分出大小。
+        # k 向 2~3 偏置：k=1（末位定胜负）实测已 93%，"相同"链更长的
+        # k=2/3 是短板（全量 85~94%），需要更多深链样本练判定
         d = random.randint(2, max_digits)
-        k = random.randint(1, min(3, d - 1))
+        k = min(random.choice([1, 2, 2, 3, 3]), d - 1)
         return _close_pair(d, k)
 
     # 一般不等长

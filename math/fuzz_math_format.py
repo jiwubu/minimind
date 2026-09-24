@@ -61,6 +61,10 @@ def check_trace(a, op, b):
     rev = re.search(r'逆序: (\d+)', text).group(1)
     ans = _ANS_RE.search(text).group(2).lstrip('-')
     assert rev == ans[::-1], f'逆序/答案不互为反转:\n{text}'
+
+    # 6. 比较链的倒计时状态严格递减（v6.1 状态锚）
+    cnt = [int(m) for m in re.findall(r'相同，还剩 (\d+) 位', text)]
+    assert all(x > y for x, y in zip(cnt, cnt[1:])), f'倒计时不递减: {cnt}\n{text}'
     return text
 
 

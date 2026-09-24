@@ -323,7 +323,8 @@ def build_cases(args):
     # （档位总分达标而档内分布塌陷，是最容易复发的评测盲区）。
     for d in range(2, args.max_digits + 1):
         for _ in range(args.n):
-            k = random.randint(1, min(3, d - 1))
+            # k 分布与训练采样同步偏置（向 2~3），否则深链改进在评测里不可见
+            k = min(random.choice([1, 2, 2, 3, 3]), d - 1)
             head = str(random.randint(1, 9)) + ''.join(
                 str(random.randint(0, 9)) for _ in range(d - k - 1))
             tail_a = random.randint(0, 10 ** k - 2)
@@ -339,7 +340,11 @@ def build_cases(args):
     # 按 k 分桶在汇总里单独打印 —— 只看档位总分看不见中间深度的塌陷。
     for d in range(2, args.max_digits + 1):
         for _ in range(args.n):
-            k = random.randint(1, d - 1)
+            # k 分布与训练采样同步偏置：k>=5 加量（深度剥离是实测短板）
+            if d >= 6 and random.random() < 0.4:
+                k = random.randint(5, d - 1)
+            else:
+                k = random.randint(1, d - 1)
             r = random.randint(10 ** (d - k - 1), 10 ** (d - k) - 1)
             lo = max(1, 10 ** (d - 1) - r)
             hi = 10 ** d - 1 - r

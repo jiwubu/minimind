@@ -109,6 +109,11 @@ def compare_trace(a, b):
     符号判断必须有显式演算过程：若只写"a 小于 b"这一句结论，模型就得在
     单次前向里猜出谁大，实测 b/a>0.95 时准确率仅 19%（首位相同就掷硬币）。
     拆成"先比位数、再从高位逐位比"之后，每一步都只需比较两个一位数。
+
+    "相同"行带倒计时状态（还剩 N 位）：全量评测发现"相同"链越长、链尾
+    的判定越易翻转（k=1 93%、k=3 85%）——长相同链上位置跟踪衰减，链尾
+    的判定 token 失去"比到哪了"的参照。显式回显剩余位数，给判定一个
+    可寻址的状态锚，替代隐式的链上计数。
     """
     sa, sb = str(a), str(b)
     lines = [f'先比较 {a} 和 {b} 的大小']
@@ -123,8 +128,10 @@ def compare_trace(a, b):
     lines.append(f'位数相同，都是 {len(sa)} 位，从最高位逐位比较')
     for i, (x, y) in enumerate(zip(sa, sb)):
         unit = UNITS[len(sa) - 1 - i]
+        remain = len(sa) - 1 - i                 # 本位之后还剩几个待比较位
         if x == y:
-            lines.append(f'{unit}: {x} = {y}，相同，继续比下一位')
+            tail = f'，还剩 {remain} 位' if remain else ''
+            lines.append(f'{unit}: {x} = {y}，相同{tail}')
         else:
             big = a if x > y else b
             sym = '>' if x > y else '<'
