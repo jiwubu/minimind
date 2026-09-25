@@ -23,7 +23,7 @@ args = ap.parse_args()
 print(f"加载 {MODEL_ID} ...")
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
-    torch_dtype="float16",
+    dtype="float16",
     device_map="auto",
 )
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
