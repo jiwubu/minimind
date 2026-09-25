@@ -9,4 +9,6 @@ download.sh
 upload.sh
 checkpoints
 bak
-scripts/minimind-math-v3
+scripts/minimind-math-v3/*.json
+scripts/minimind-math-v3/*.jinja
+scripts/minimind-math-v3/model.safetensors
