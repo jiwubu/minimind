@@ -129,8 +129,8 @@ if __name__ == '__main__':
     lm_config = MiniMindConfig(hidden_size=768, num_hidden_layers=8, max_seq_len=8192, use_moe=False)
 
     # convert torch to transformers
-    torch_path = f"../out/full_sft_{lm_config.hidden_size}{'_moe' if lm_config.use_moe else ''}.pth"
-    transformers_path = '../minimind-3'
+    torch_path = f"../out/full_sft_math_all_v3_{lm_config.hidden_size}{'_moe' if lm_config.use_moe else ''}.pth"
+    transformers_path = '../scripts/minimind-math-v3'
     convert_torch2transformers(torch_path, transformers_path)
 
     # # merge lora
